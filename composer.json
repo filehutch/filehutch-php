@@ -1,0 +1,60 @@
+{
+    "name": "filehutch/filehutch-php",
+    "description": "PHP and Laravel client for FileHutch. Your app persists an opaque file id; FileHutch owns uploads, delivery and transforms.",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["filehutch", "file-upload", "s3", "r2", "storage", "laravel"],
+    "homepage": "https://github.com/filehutch/filehutch-php",
+    "support": {
+        "issues": "https://github.com/filehutch/filehutch-php/issues",
+        "source": "https://github.com/filehutch/filehutch-php"
+    },
+    "require": {
+        "php": "^8.2",
+        "ext-json": "*",
+        "psr/http-client": "^1.0",
+        "psr/http-factory": "^1.0",
+        "psr/http-message": "^1.1 || ^2.0",
+        "php-http/discovery": "^1.19"
+    },
+    "require-dev": {
+        "guzzlehttp/guzzle": "^7.8",
+        "orchestra/testbench": "^9.0 || ^10.0",
+        "phpunit/phpunit": "^11.0"
+    },
+    "suggest": {
+        "guzzlehttp/guzzle": "The default HTTP client, and the only one whose timeout the SDK can set for you. Laravel already ships it.",
+        "laravel/framework": "For HasHutch attachments, the facade and the direct-upload routes."
+    },
+    "autoload": {
+        "psr-4": {
+            "FileHutch\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "FileHutch\\Tests\\": "tests/"
+        }
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "FileHutch\\Laravel\\FileHutchServiceProvider"
+            ],
+            "aliases": {
+                "FileHutch": "FileHutch\\Laravel\\Facades\\FileHutch"
+            }
+        }
+    },
+    "scripts": {
+        "test": "phpunit"
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": {
+            "php-http/discovery": false
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
