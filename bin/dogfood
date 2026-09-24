@@ -1,0 +1,159 @@
+#!/usr/bin/env php
+<?php
+// The FileHutch acceptance flow, through this SDK, against a live server.
+//
+//   FILE_HUTCH_URL=http://localhost:3000 FILE_HUTCH_API_KEY=fh_… \
+//   PDF_PATH=report.pdf IMAGE_PATH=avatar.png bin/dogfood
+//
+// The project needs a private "documents" (application/pdf) policy and a public
+// "avatars" (image/*) policy with a public base URL on its storage connection,
+// and at least one named transform. Transforms are skipped, not failed, when the
+// project's storage cannot render them. Mirrors filehutch-ruby's bin/dogfood.
+
+declare(strict_types=1);
+
+require __DIR__ . '/../vendor/autoload.php';
+
+use FileHutch\Client;
+use FileHutch\Exceptions\ApiError;
+use FileHutch\Exceptions\NotFoundError;
+use FileHutch\Exceptions\PolicyError;
+
+function env(string $name): string
+{
+    $value = getenv($name);
+    if ($value === false || $value === '') {
+        fwrite(STDERR, "Set {$name}\n");
+        exit(1);
+    }
+    return $value;
+}
+
+function fetch(string $url): array
+{
+    $context = stream_context_create(['http' => ['ignore_errors' => true, 'follow_location' => 1]]);
+    $body = @file_get_contents($url, false, $context);
+    $status = 0;
+    foreach ($http_response_header ?? [] as $header) {
+        if (preg_match('{^HTTP/\S+ (\d+)}', $header, $m)) {
+            $status = (int) $m[1]; // the last one, after redirects
+        }
+    }
+    return [$status, $body === false ? '' : $body];
+}
+
+function step(int $n, string $text, callable $fn): void
+{
+    echo "{$n}. {$text} … ";
+    try {
+        $result = $fn();
+        echo $result === 'skipped' ? "skipped\n" : "ok\n";
+    } catch (Throwable $e) {
+        echo "FAILED\n   " . get_class($e) . ': ' . $e->getMessage() . "\n";
+        exit(1);
+    }
+}
+
+function check(bool $condition, string $message): void
+{
+    if (!$condition) {
+        throw new RuntimeException($message);
+    }
+}
+
+$client = new Client(apiKey: env('FILE_HUTCH_API_KEY'), url: getenv('FILE_HUTCH_URL') ?: 'http://localhost:3000');
+$pdfPath = env('PDF_PATH');
+$imagePath = env('IMAGE_PATH');
+$records = []; // what a customer's app would persist: file ids only
+
+$project = $client->project();
+echo "FileHutch dogfood (PHP) against " . (getenv('FILE_HUTCH_URL') ?: 'http://localhost:3000') . "\n";
+echo "   project {$project->id}\n";
+
+$pdf = $image = null;
+
+step(1, 'Upload a private PDF with $client->upload()', function () use ($client, $pdfPath, &$pdf, &$records) {
+    $pdf = $client->upload(new SplFileInfo($pdfPath), policy: 'documents', metadata: ['source' => 'dogfood']);
+    check($pdf->isReady(), "expected ready, got {$pdf->status}");
+    check($pdf->url === null, 'private file should have no public url');
+    check($pdf->metadata === ['source' => 'dogfood'], 'metadata lost');
+    check($pdf->checksum === 'md5:' . md5_file($pdfPath), "checksum {$pdf->checksum} does not match the bytes sent");
+    $records['report'] = $pdf->id;
+});
+
+step(2, 'Read it back through an expiring URL', function () use ($client, $pdfPath, &$pdf) {
+    $signed = $client->signedUrl($pdf->id, expiresIn: 120, disposition: 'attachment');
+    check($signed->expiresAt !== null, 'a signed URL should say when it expires');
+    [$status, $body] = fetch($signed->url);
+    check($status === 200, "signed url returned HTTP {$status}");
+    check($body === file_get_contents($pdfPath), 'bytes differ');
+});
+
+step(3, 'Upload a public image via the three explicit steps', function () use ($client, $imagePath, &$image, &$records) {
+    $bytes = file_get_contents($imagePath);
+    $created = $client->createUpload(policy: 'avatars', filename: basename($imagePath),
+        contentType: 'image/png', byteSize: strlen($bytes));
+    check($created->file->isPending(), 'file should be pending');
+    $client->putToStorage($created->upload, $bytes);
+    $image = $client->completeUpload($created->upload->fileId);
+    check($image->isReady(), "expected ready, got {$image->status}");
+    check($image->isPublic(), 'avatars are public');
+    $records['avatar'] = $image->id;
+});
+
+step(4, 'Fetch it at its stable public URL', function () use ($imagePath, &$image) {
+    check($image->url !== null, 'public file should carry a url');
+    [$status, $body] = fetch($image->url);
+    check($status === 200, "public url returned HTTP {$status}");
+    check($body === file_get_contents($imagePath), 'bytes differ');
+});
+
+step(5, 'Ask for a named transform', function () use ($client, &$image) {
+    $names = array_map(fn ($t) => $t->name, $client->transforms());
+    check($names !== [], 'the project has no transforms');
+    try {
+        $url = $client->transformUrl($image->id, $names[0]);
+    } catch (ApiError $e) {
+        if ($e->errorCode === 'transforms_unsupported') {
+            return 'skipped';
+        }
+        throw $e;
+    }
+    check(str_starts_with($url->url, 'http'), "not a URL: {$url->url}");
+    [$status] = fetch($url->url);
+    check($status === 200, "transform url returned HTTP {$status}");
+});
+
+step(6, 'A PDF against the image policy is a PolicyError, before any bytes move', function () use ($client, $pdfPath) {
+    try {
+        $client->upload(new SplFileInfo($pdfPath), policy: 'avatars');
+    } catch (PolicyError $e) {
+        check($e->errorCode === 'policy_violation', "expected policy_violation, got {$e->errorCode}");
+        return;
+    }
+    throw new RuntimeException('the upload should have been refused');
+});
+
+step(7, 'An unknown id is a NotFoundError', function () use ($client) {
+    try {
+        $client->file('file_' . str_repeat('0', 20));
+    } catch (NotFoundError) {
+        return;
+    }
+    throw new RuntimeException('expected NotFoundError');
+});
+
+step(8, 'Read both back by the ids a customer would have stored', function () use ($client, &$records) {
+    foreach ($records as $label => $id) {
+        check($client->file($id)->isReady(), "{$label} is not ready");
+    }
+});
+
+step(9, 'Delete both, and they read as deleted', function () use ($client, &$records) {
+    foreach ($records as $label => $id) {
+        check($client->deleteFile($id), "delete {$label} returned false");
+        check($client->file($id)->isDeleted(), "{$label} should read as deleted");
+    }
+});
+
+echo "All green.\n";
