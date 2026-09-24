@@ -327,6 +327,17 @@ composer install
 composer test        # PHPUnit: the client against a stubbed PSR-18 client, and Laravel via Testbench
 ```
 
+The unit tests fake HTTP. `bin/dogfood` runs the whole flow against a live
+FileHutch instead: upload, signed and public URLs, a transform, the error
+classes, delete. It needs a project with a private `documents` (PDF) policy, a
+public `avatars` (image) policy and a named transform, which is what a local
+FileHutch's seed data sets up:
+
+```sh
+FILE_HUTCH_URL=http://localhost:3000 FILE_HUTCH_API_KEY=fh_… \
+PDF_PATH=report.pdf IMAGE_PATH=avatar.png bin/dogfood
+```
+
 ## License
 
 MIT
